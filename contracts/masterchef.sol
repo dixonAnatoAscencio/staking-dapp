@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
+pragma solidity ^0.8.7;
+
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -7,42 +9,63 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./n2drewards.sol";
 import "./n2drpay.sol";
 
-
-pragma solidity ^0.8.7;
-
-
+/**
+ * @title N2DMasterChefV1
+ * @dev Contrato para gestionar staking y recompensas en el protocolo DeFi N2D.
+ */
 contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
+    // Estructura de datos para almacenar información del usuario en cada pool.
     struct UserInfo {
-        uint256 amount;
-        uint256 pendingReward;
+        uint256 amount;         // Cantidad de tokens staked por el usuario.
+        uint256 pendingReward;  // Recompensas pendientes para el usuario.
     }
 
+    // Estructura de datos para almacenar información de cada pool.
     struct PoolInfo {
-        IERC20 lpToken;
-        uint256 allocPoint;
-        uint256 lastRewardBlock;
-        uint256 rewardTokenPerShare;
+        IERC20 lpToken;         // Token LP asociado al pool.
+        uint256 allocPoint;     // Puntos de asignación del pool.
+        uint256 lastRewardBlock;// Último bloque en el que se otorgaron recompensas.
+        uint256 rewardTokenPerShare;  // Recompensa por token LP acumulada.
     }
 
-    N2DRewards public n2dr;
-    N2DRPay public n2drpay;
+    // Contratos relacionados
+    N2DRewards public n2dr;    // Contrato de recompensas N2D.
+    N2DRPay public n2drpay;    // Contrato de pagos N2D.
+
+    // Dirección del desarrollador
     address public dev;
+
+    // Recompensa por bloque
     uint256 public n2drPerBlock;
 
+    // Mapeo para almacenar información del usuario en cada pool
     mapping(uint256 => mapping(address => UserInfo)) public userInfo;
 
+    // Array para almacenar información de cada pool
     PoolInfo[] public poolInfo;
+
+    // Variables para el control de la asignación total
     uint256 public totalAllocation = 0;
     uint256 public startBlock;
     uint256 public BONUS_MULTIPLIER;
 
+    // Eventos
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
 
+    /**
+     * @dev Constructor del contrato.
+     * @param _n2dr Contrato de recompensas N2D.
+     * @param _n2drpay Contrato de pagos N2D.
+     * @param _dev Dirección del desarrollador.
+     * @param _n2drPerBlock Recompensa por bloque para el token N2DR.
+     * @param _startBlock Bloque de inicio.
+     * @param _multiplier Multiplicador de bonificación.
+     */
     constructor(
         N2DRewards _n2dr,
         N2DRPay _n2drpay,
@@ -50,7 +73,7 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         uint256 _n2drPerBlock,
         uint256 _startBlock,
         uint256 _multiplier
-    ) public {
+    ) Ownable() ReentrancyGuard() {
         n2dr = _n2dr;
         n2drpay = _n2drpay;
         dev = _dev;
@@ -58,6 +81,7 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         startBlock = _startBlock;
         BONUS_MULTIPLIER = _multiplier;
 
+        // Crear el primer pool al inicializar el contrato
         poolInfo.push(
             PoolInfo({
                 lpToken: _n2dr,
@@ -69,11 +93,23 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         totalAllocation = 1000;
     }
 
+    /**
+     * @dev Modificador para validar que el ID del pool sea válido.
+     * @param _pid ID del pool.
+     */
     modifier validatePool(uint256 _pid) {
         require(_pid < poolInfo.length, "Pool Id Invalid");
         _;
     }
 
+    /**
+     * @dev Obtiene información de un pool específico.
+     * @param _pid ID del pool.
+     * @return lpToken Dirección del token LP del pool.
+     * @return allocPoint Puntos de asignación del pool.
+     * @return lastRewardBlock Último bloque de recompensa.
+     * @return rewardTokenPerShare Recompensa por token LP acumulada.
+     */
     function getPoolInfo(uint256 _pid)
         public
         view
@@ -92,10 +128,20 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @dev Devuelve la longitud (número de pools) del contrato.
+     * @return Número de pools.
+     */
     function poolLength() external view returns (uint256) {
         return poolInfo.length;
     }
 
+    /**
+     * @dev Obtiene el multiplicador de bonificación para un rango de bloques.
+     * @param _from Bloque de inicio.
+     * @param _to Bloque de fin.
+     * @return Multiplicador de bonificación.
+     */
     function getMultiplier(uint256 _from, uint256 _to)
         public
         view
@@ -104,10 +150,18 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         return _to.sub(_from).mul(BONUS_MULTIPLIER);
     }
 
+    /**
+     * @dev Actualiza el multiplicador de bonificación (soloOwner).
+     * @param multiplierNumber Nuevo multiplicador de bonificación.
+     */
     function updateMultiplier(uint256 multiplierNumber) public onlyOwner {
         BONUS_MULTIPLIER = multiplierNumber;
     }
 
+    /**
+     * @dev Verifica si ya existe un pool con el token LP dado.
+     * @param _lpToken Token LP a verificar.
+     */
     function checkPoolDuplicate(IERC20 _lpToken) public view {
         uint256 length = poolInfo.length;
         for (uint256 _pid = 0; _pid < length; _pid++) {
@@ -115,6 +169,10 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Actualiza el pool de staking principal.
+     * Distribuye puntos de asignación a los demás pools de staking.
+     */
     function updateStakingPool() internal {
         uint256 length = poolInfo.length;
         uint256 points = 0;
@@ -128,9 +186,15 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Agrega un nuevo pool de staking (soloOwner).
+     * @param _allocPoint Puntos de asignación para el nuevo pool.
+     * @param _lpToken Token LP asociado al nuevo pool.
+     * @param _withUpdate Si se debe actualizar la información de los pools existentes antes de agregar el nuevo pool.
+     */
     function add(uint256 _allocPoint, IERC20 _lpToken, bool _withUpdate) public onlyOwner {
-        if(_withUpdate){
-          massUpdatePools;
+        if (_withUpdate) {
+            massUpdatePools();
         }
         checkPoolDuplicate(_lpToken);
         uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
@@ -146,6 +210,10 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         updateStakingPool();
     }
 
+    /**
+     * @dev Actualiza la información de un pool de staking (soloOwner).
+     * @param _pid ID del pool.
+     */
     function updatePool(uint256 _pid) public validatePool(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         if (block.number < pool.lastRewardBlock) {
@@ -164,6 +232,9 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         pool.lastRewardBlock = block.number;
     }
 
+    /**
+     * @dev Actualiza todos los pools de staking.
+     */
     function massUpdatePools() public {
         uint256 length = poolInfo.length;
         for(uint256 pid; pid < length; pid++){
@@ -171,6 +242,12 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Establece la asignación de puntos para un pool de staking existente (soloOwner).
+     * @param _pid ID del pool.
+     * @param _allocPoint Nueva asignación de puntos para el pool.
+     * @param _withUpdate Si se debe actualizar la información de los pools antes de establecer la nueva asignación.
+     */
     function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) public onlyOwner {
         if (_withUpdate) {
             massUpdatePools();
@@ -183,6 +260,12 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Calcula las recompensas pendientes para un usuario en un pool específico.
+     * @param _pid ID del pool.
+     * @param _user Dirección del usuario.
+     * @return Recompensas pendientes para el usuario en el pool.
+     */
     function pendingReward(uint256 _pid, address _user) external view returns (uint256) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
@@ -197,6 +280,11 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         return user.amount.mul(rewardTokenPerShare).div(1e12).sub(user.pendingReward);
     }
 
+    /**
+     * @dev Deposita tokens en un pool de staking.
+     * @param _pid ID del pool.
+     * @param _amount Cantidad de tokens a depositar.
+     */
     function stake(uint256 _pid, uint256 _amount) public validatePool(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
@@ -213,9 +301,13 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         }
         user.pendingReward = user.amount.mul(pool.rewardTokenPerShare).div(1e12);
         emit Deposit(msg.sender, _pid, _amount);
-
     }
 
+    /**
+     * @dev Retira tokens de un pool de staking.
+     * @param _pid ID del pool.
+     * @param _amount Cantidad de tokens a retirar.
+     */
     function unstake(uint256 _pid, uint256 _amount) public validatePool(_pid) {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
@@ -229,14 +321,14 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         if(_amount > 0) {
             user.amount = user.amount.sub(_amount);
             pool.lpToken.safeTransfer(address(msg.sender), _amount);
-            
         }
         user.pendingReward = user.amount.mul(pool.rewardTokenPerShare).div(1e12);
         emit Withdraw(msg.sender, _pid, _amount);
-
     }
 
-
+    /**
+     * @dev Reinvierte automáticamente las recompensas en el pool principal.
+     */
     function autoCompound() public {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[0][msg.sender];
@@ -250,7 +342,10 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
          user.pendingReward = user.amount.mul(pool.rewardTokenPerShare).div(1e12);
     }
 
-
+    /**
+     * @dev Retira todos los fondos de un pool de staking de forma inmediata.
+     * @param _pid ID del pool.
+     */
     function emergencyWithdraw(uint256 _pid) public {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender]; 
@@ -260,16 +355,21 @@ contract N2DMasterChefV1 is Ownable, ReentrancyGuard {
         user.pendingReward = 0;
     }
 
-
+    /**
+     * @dev Cambia la dirección del desarrollador (solo el desarrollador actual puede llamar a esta función).
+     * @param _dev Nueva dirección del desarrollador.
+     */
     function changeDev(address _dev) public {
         require(msg.sender == dev, "Not Authorized");
         dev = _dev;
     }
 
+    /**
+     * @dev Transfiere tokens N2DR de forma segura utilizando el contrato de pagos N2D.
+     * @param _to Dirección del destinatario.
+     * @param _amount Cantidad de tokens a transferir.
+     */
     function safeN2drTransfer(address _to, uint256 _amount) internal {
         n2drpay.safeN2drTransfer(_to, _amount);
-
     }
-
-
 }
